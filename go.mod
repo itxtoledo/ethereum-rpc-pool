@@ -1,4 +1,4 @@
-module github.com/yourusername/go-rpc-proxy
+module github.com/itxtoledo/ethereum-rpc-pool
 
 go 1.18
 
