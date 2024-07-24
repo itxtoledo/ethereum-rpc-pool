@@ -56,7 +56,7 @@ func main() {
 			return
 		}
 
-		id, hasID := jsonRequest["id"]
+		id := jsonRequest["id"]
 
 		proxyReq, err := http.NewRequest("POST", targetRPC, bytes.NewBuffer(reqBody))
 		if err != nil {
