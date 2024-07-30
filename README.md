@@ -14,7 +14,7 @@ This project is a Go-based proxy server that forwards POST requests to a list of
 
 ### Prerequisites
 
-- Go 1.18 or later
+- Go 1.19 or later
 - Docker
 
 ### Environment Variables
@@ -25,12 +25,14 @@ This project is a Go-based proxy server that forwards POST requests to a list of
 ### Installation
 
 1. Clone the repository:
+
    ```sh
    git clone https://github.com/yourusername/go-rpc-proxy.git
    cd go-rpc-proxy
    ```
 
 2. Set the environment variables:
+
    ```sh
    export RPC_LIST=http://rpc1.example.com,http://rpc2.example.com,http://rpc3.example.com
    export PORT=8080
@@ -44,6 +46,7 @@ This project is a Go-based proxy server that forwards POST requests to a list of
 ### Building and Running with Docker
 
 1. Build the Docker image:
+
    ```sh
    docker build -t go-rpc-proxy .
    ```
@@ -58,6 +61,7 @@ This project is a Go-based proxy server that forwards POST requests to a list of
 The server will start and listen on the specified port. You can send POST requests to the server, and it will proxy the requests to one of the configured RPC endpoints.
 
 Example POST request:
+
 ```sh
 curl -X POST http://localhost:8080/ -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
 ```
@@ -67,6 +71,7 @@ curl -X POST http://localhost:8080/ -H "Content-Type: application/json" -d '{"js
 ### `main.go`
 
 The main Go application file:
+
 - Loads the RPC list and port from environment variables.
 - Sets up an HTTP server to handle POST requests.
 - Uses a round-robin algorithm to select the next RPC endpoint.
@@ -76,6 +81,7 @@ The main Go application file:
 ### `Dockerfile`
 
 A multi-stage Dockerfile:
+
 - **Builder Stage:** Uses the official Golang image to build the Go application.
 - **Final Stage:** Uses a minimal Alpine image to run the built application.
 

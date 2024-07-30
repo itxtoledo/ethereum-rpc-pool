@@ -1,6 +1,5 @@
-module github.com/itxtoledo/ethereum-rpc-pool
+module ethereum-rpc-pool
 
-go 1.18
+go 1.19
 
-require (
-)
+require github.com/joho/godotenv v1.5.1
