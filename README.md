@@ -1,6 +1,8 @@
 # Ethereum RPC Pool
 
-This project is a Go-based proxy server that forwards POST requests to a list of RPC endpoints using a round-robin algorithm. The proxy acts as an intermediary, making the request to the RPC and returning the response to the client.
+This project is a Go-based proxy server designed to distribute POST requests across multiple RPC endpoints using a round-robin algorithm. By using this proxy, you can avoid relying on a single RPC endpoint. Instead, you can configure a list of public RPC endpoints, and the service will handle the distribution of requests among them. This approach can help you avoid the costs associated with paid nodes while ensuring better reliability and load balancing.
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/template/CObZnk?referralCode=PgYfrf)
 
 ## Features
 
@@ -55,6 +57,14 @@ This project is a Go-based proxy server that forwards POST requests to a list of
    ```sh
    docker run -d -p 8080:8080 -e RPC_LIST="http://rpc1.example.com,http://rpc2.example.com,http://rpc3.example.com" -e PORT=8080 go-rpc-proxy
    ```
+
+## One-Click Deployment
+
+### Railway
+
+1. Click the "Deploy on Railway" button above
+2. Set the required environment variable `RPC_LIST` with your comma-separated RPC endpoints
+3. Deploy and your Ethereum RPC Pool will be live
 
 ### Usage
 
