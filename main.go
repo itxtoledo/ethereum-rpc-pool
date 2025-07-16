@@ -42,6 +42,10 @@ func main() {
 
 	// Set up the handlers
 	http.HandleFunc("/", handlers.RPCHandler)
+	http.HandleFunc("/status", handlers.StatusHandler)
+
+	// Start fetching block numbers in the background
+	go handlers.FetchBlockNumber()
 
 	// Start the server on the specified port
 	log.Printf("Server started on port %s\n", port)
