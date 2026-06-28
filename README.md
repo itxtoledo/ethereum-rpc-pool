@@ -19,10 +19,88 @@ Go-based proxy server that distributes Ethereum JSON-RPC requests across multipl
 - **RPC List Trimming** — Whitespace around comma-separated URLs is stripped automatically
 - **Retry Logic** — `eth_getBlockByNumber` retries up to 3 providers on null results
 - **Multi-Arch Docker** — Pre-built images for `linux/amd64` and `linux/arm64` on [GHCR](https://github.com/itxtoledo/ethereum-rpc-pool/pkgs/container/ethereum-rpc-pool)
+- **Minimal Image** — ~10MB distroless base, no shell, non-root user
+
+## Available Images
+
+Pre-built multi-arch images are published to [GitHub Container Registry](https://github.com/itxtoledo/ethereum-rpc-pool/pkgs/container/ethereum-rpc-pool) on every release. No build required.
+
+| Tag | Description |
+|---|---|
+| `latest` | Most recent stable release |
+| `v1.0.0` | Exact release version |
+| `1.0` | Minor version (floating patches) |
+| `1` | Major version (floating minors) |
+| `sha-abc1234` | Specific commit |
+
+**Architectures:** `linux/amd64`, `linux/arm64`
 
 ## Quick Start
 
-### Run locally
+### Run with Docker (recommended)
+
+```sh
+docker pull ghcr.io/itxtoledo/ethereum-rpc-pool:latest
+
+docker run -d -p 8080:8080 \
+  -e RPC_LIST="https://mainnet.infura.io/v3/YOUR_KEY,https://eth-mainnet.alchemyapi.io/v2/YOUR_KEY" \
+  ghcr.io/itxtoledo/ethereum-rpc-pool:latest
+```
+
+### Docker Compose
+
+```yaml
+# docker-compose.yml
+services:
+  rpc-pool:
+    image: ghcr.io/itxtoledo/ethereum-rpc-pool:latest
+    ports:
+      - "8080:8080"
+    environment:
+      RPC_LIST: "https://mainnet.infura.io/v3/YOUR_KEY,https://eth-mainnet.alchemyapi.io/v2/YOUR_KEY"
+      BLOCK_NUMBER_FETCH_INTERVAL_SECONDS: "10"
+```
+
+### Kubernetes
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rpc-pool
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: rpc-pool
+  template:
+    metadata:
+      labels:
+        app: rpc-pool
+    spec:
+      containers:
+        - name: rpc-pool
+          image: ghcr.io/itxtoledo/ethereum-rpc-pool:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: RPC_LIST
+              value: "https://mainnet.infura.io/v3/YOUR_KEY,https://eth-mainnet.alchemyapi.io/v2/YOUR_KEY"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+          resources:
+            limits:
+              memory: "64Mi"
+              cpu: "100m"
+```
+
+### Run locally (development)
 
 ```sh
 git clone https://github.com/itxtoledo/ethereum-rpc-pool.git
@@ -34,21 +112,13 @@ cp .env.example .env
 make dev
 ```
 
-### Run with Docker
-
-```sh
-docker run -d -p 8080:8080 \
-  -e RPC_LIST="https://mainnet.infura.io/v3/YOUR_KEY,https://eth-mainnet.alchemyapi.io/v2/YOUR_KEY" \
-  ghcr.io/itxtoledo/ethereum-rpc-pool:latest
-```
-
-### Docker Compose (with local Anvil)
+### Docker Compose (with local Anvil for development)
 
 ```sh
 docker compose up
 ```
 
-This starts the proxy + a local Anvil Ethereum node for development. Send requests to `http://localhost:8080/`.
+This starts the proxy + a local Anvil Ethereum node. Send requests to `http://localhost:8080/`.
 
 ## Usage Examples
 
@@ -114,7 +184,10 @@ Copy `.env.example` to `.env` and fill in your values.
 **Requirements:** Go 1.23+, [Foundry](https://book.getfoundry.sh/) (for integration tests), [golangci-lint](https://golangci-lint.run/) (for linting)
 
 ```sh
-# Build
+# Run locally
+make dev
+
+# Build binary (optional — pre-built images available)
 make build
 
 # Run all tests
@@ -128,9 +201,6 @@ make test-integration
 
 # Lint
 make lint
-
-# Docker build
-make docker-build
 ```
 
 ## Endpoints
@@ -167,7 +237,7 @@ Docker images are tagged: `v1.0.0`, `1.0`, `1`, `latest`, and commit SHA.
 | Workflow | Trigger | What it does |
 |---|---|---|
 | **CI** | PRs and pushes to `main` | Unit tests, integration tests (Anvil), multi-arch Docker build |
-| **Release** | Git tag `v*` | Multi-arch image push to GHCR, GitHub Release |
+| **Release** | Git tag `v*` | Builds and pushes multi-arch image to GHCR, creates GitHub Release |
 
 ## Project Structure
 
@@ -184,7 +254,7 @@ Docker images are tagged: `v1.0.0`, `1.0`, `1`, `latest`, and commit SHA.
 │   └── middleware.go         # Recovery, request IDs, access log, max body
 ├── utils/
 │   └── round_robin.go       # Atomic round-robin index
-├── Dockerfile               # Multi-stage build, non-root user, HEALTHCHECK
+├── Dockerfile               # Multi-stage distroless build (pre-built images on GHCR)
 ├── docker-compose.yml       # Dev setup with Anvil
 ├── Makefile                 # Build, test, lint targets
 ├── .github/workflows/       # CI + Release workflows
