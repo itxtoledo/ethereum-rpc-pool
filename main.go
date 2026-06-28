@@ -39,7 +39,10 @@ func main() {
 		logger.Error("RPC_LIST environment variable is not defined")
 		os.Exit(1)
 	}
-	handlers.SetRPCs(rpcList)
+	if err := handlers.SetRPCs(rpcList); err != nil {
+		logger.Error("invalid RPC_LIST", "error", err)
+		os.Exit(1)
+	}
 
 	port := os.Getenv("PORT")
 	if port == "" {

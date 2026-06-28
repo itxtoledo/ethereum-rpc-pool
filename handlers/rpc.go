@@ -46,7 +46,7 @@ func Logger() *slog.Logger {
 	return logger
 }
 
-func SetRPCs(rpcList string) {
+func SetRPCs(rpcList string) error {
 	parts := strings.Split(rpcList, ",")
 	rpcs = make([]string, 0, len(parts))
 	for _, p := range parts {
@@ -56,11 +56,11 @@ func SetRPCs(rpcList string) {
 		}
 	}
 	if len(rpcs) == 0 {
-		Logger().Error("RPC_LIST is empty after trimming")
-		os.Exit(1)
+		return fmt.Errorf("RPC_LIST is empty after trimming")
 	}
 	Logger().Info("RPC endpoints configured", "count", len(rpcs))
 	InitializeRPCStatus(rpcs)
+	return nil
 }
 
 func FetchBlockNumber() {
@@ -188,6 +188,8 @@ func RPCHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	start := time.Now()
+
 	reqBody, err := io.ReadAll(r.Body)
 	if err != nil {
 		SendError(w, -32603, "Error reading request body", nil)
@@ -201,7 +203,11 @@ func RPCHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	method, _ := jsonRequest["method"].(string)
+	var method string
+	method, _ = jsonRequest["method"].(string)
+	defer func() {
+		RequestDuration.WithLabelValues(method).Observe(time.Since(start).Seconds())
+	}()
 
 	switch method {
 	case "eth_blockNumber":
@@ -244,9 +250,16 @@ func StatusHandler(w http.ResponseWriter, r *http.Request) {
 func handleBlockNumber(w http.ResponseWriter, jsonRequest map[string]any) bool {
 	statuses := GetRPCStatus()
 	var latestBlockNumber string
+	var latestBlockNum int64
 
 	for _, status := range statuses {
-		if status.Online && (latestBlockNumber == "" || status.BlockNumber > latestBlockNumber) {
+		if !status.Online || status.BlockNumber == "" {
+			continue
+		}
+		if bn, err := parseHexBlock(status.BlockNumber); err == nil && bn > latestBlockNum {
+			latestBlockNum = bn
+			latestBlockNumber = status.BlockNumber
+		} else if latestBlockNumber == "" {
 			latestBlockNumber = status.BlockNumber
 		}
 	}
@@ -295,12 +308,19 @@ func handleGetBlockByNumber(w http.ResponseWriter, jsonRequest map[string]any) b
 	if requestedBlock == "latest" {
 		statuses := GetRPCStatus()
 		var latestBlockNumber string
+		var latestBlockNum int64
 		for _, status := range statuses {
-			if status.Online && (latestBlockNumber == "" || status.BlockNumber > latestBlockNumber) {
+			if !status.Online || status.BlockNumber == "" {
+				continue
+			}
+			if bn, err := parseHexBlock(status.BlockNumber); err == nil && bn > latestBlockNum {
+				latestBlockNum = bn
+				latestBlockNumber = status.BlockNumber
+			} else if latestBlockNumber == "" {
 				latestBlockNumber = status.BlockNumber
 			}
 		}
-		if latestBlockNumber != cachedBlockNumber {
+		if latestBlockNumber != "" && latestBlockNumber != cachedBlockNumber {
 			return false
 		}
 	} else if requestedBlock != cachedBlockNumber {
@@ -441,6 +461,13 @@ func sendJSONResponse(w http.ResponseWriter, data any, statusCode int) {
 	if err := json.NewEncoder(w).Encode(data); err != nil {
 		Logger().Error("failed to encode JSON response", "error", err)
 	}
+}
+
+func parseHexBlock(hex string) (int64, error) {
+	if len(hex) < 3 || hex[:2] != "0x" {
+		return 0, fmt.Errorf("invalid hex block number: %s", hex)
+	}
+	return strconv.ParseInt(hex[2:], 16, 64)
 }
 
 func writeJSONResponse(w http.ResponseWriter, statusCode int, body []byte) {

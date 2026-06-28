@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"strconv"
+	"sync/atomic"
 	"time"
 )
 
@@ -53,6 +55,7 @@ func AccessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 			ww := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 			next.ServeHTTP(ww, r)
 			logger.Info("request",
+				"request_id", GetRequestID(r),
 				"method", r.Method,
 				"path", r.URL.Path,
 				"status", ww.statusCode,
@@ -93,23 +96,8 @@ func GetRequestID(r *http.Request) string {
 	return ""
 }
 
-var idCounter uint64
+var idCounter atomic.Uint64
 
 func generateID() string {
-	idCounter++
-	return time.Now().UTC().Format("20060102T150405") + "-" + itoa(idCounter)
-}
-
-func itoa(n uint64) string {
-	if n == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte(n%10) + '0'
-		n /= 10
-	}
-	return string(buf[i:])
+	return time.Now().UTC().Format("20060102T150405") + "-" + strconv.FormatUint(idCounter.Add(1), 10)
 }
