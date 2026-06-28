@@ -5,10 +5,10 @@ import (
 	"net/http"
 )
 
-func SendError(w http.ResponseWriter, code int, message string, id interface{}) {
-	errorResponse := map[string]interface{}{
+func SendError(w http.ResponseWriter, code int, message string, id any) {
+	errorResponse := map[string]any{
 		"jsonrpc": "2.0",
-		"error": map[string]interface{}{
+		"error": map[string]any{
 			"code":    code,
 			"message": message,
 		},

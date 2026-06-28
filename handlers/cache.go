@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"strconv"
 	"sync"
 	"time"
 )
@@ -31,13 +32,25 @@ func SetRPCStatus(rpcURL string, blockNumber string, responseTime int64, online 
 	status.ResponseTime = responseTime
 	status.Timestamp = time.Now()
 	status.Online = online
+
+	onlineVal := 0.0
+	if online {
+		onlineVal = 1.0
+	}
+	RPCOffline.WithLabelValues(rpcURL).Set(onlineVal)
+	RPCResponseTime.WithLabelValues(rpcURL).Set(float64(responseTime))
+
+	if blockNumber != "" {
+		if bn, err := strconv.ParseInt(blockNumber[2:], 16, 64); err == nil {
+			RPCBlockNumber.WithLabelValues(rpcURL).Set(float64(bn))
+		}
+	}
 }
 
 func GetRPCStatus() map[string]*RPCStatus {
 	rpcStatusMutex.RLock()
 	defer rpcStatusMutex.RUnlock()
 
-	// Return a copy to avoid race conditions
 	clone := make(map[string]*RPCStatus)
 	for k, v := range rpcStatusCache {
 		clone[k] = v
@@ -55,7 +68,7 @@ func InitializeRPCStatus(rpcs []string) {
 
 type BlockCache struct {
 	mu        sync.RWMutex
-	BlockData map[string]interface{}
+	BlockData map[string]any
 	Timestamp time.Time
 }
 
@@ -67,9 +80,41 @@ func GetBlockCache() *BlockCache {
 	return &blockCache
 }
 
-func SetBlockCache(blockData map[string]interface{}) {
+func SetBlockCache(blockData map[string]any) {
 	blockCache.mu.Lock()
 	defer blockCache.mu.Unlock()
 	blockCache.BlockData = blockData
 	blockCache.Timestamp = time.Now()
+}
+
+type methodCacheEntry struct {
+	value     []byte
+	timestamp time.Time
+	ttl       time.Duration
+}
+
+var methodCacheStore = make(map[string]*methodCacheEntry)
+var methodCacheMutex = &sync.RWMutex{}
+
+func SetMethodCache(key string, value []byte, ttl time.Duration) {
+	methodCacheMutex.Lock()
+	defer methodCacheMutex.Unlock()
+	methodCacheStore[key] = &methodCacheEntry{
+		value:     value,
+		timestamp: time.Now(),
+		ttl:       ttl,
+	}
+}
+
+func GetMethodCache(key string) ([]byte, bool) {
+	methodCacheMutex.RLock()
+	defer methodCacheMutex.RUnlock()
+	entry, ok := methodCacheStore[key]
+	if !ok {
+		return nil, false
+	}
+	if entry.ttl > 0 && time.Since(entry.timestamp) > entry.ttl {
+		return nil, false
+	}
+	return entry.value, true
 }

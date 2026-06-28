@@ -1,0 +1,23 @@
+services:
+  rpc-pool:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      RPC_LIST: "http://anvil:8545"
+      PORT: "8080"
+      BLOCK_NUMBER_FETCH_INTERVAL_SECONDS: "5"
+    depends_on:
+      anvil:
+        condition: service_healthy
+
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:latest
+    command: anvil --host 0.0.0.0 --port 8545
+    ports:
+      - "8545:8545"
+    healthcheck:
+      test: ["CMD", "cast", "block-number", "--rpc-url", "http://localhost:8545"]
+      interval: 5s
+      timeout: 3s
+      retries: 5

@@ -1,30 +1,21 @@
-# Use the official Golang image as a builder
-FROM golang:1.19 AS builder
+FROM golang:1.23-alpine AS builder
 
-# Set the working directory inside the container
+RUN apk add --no-cache ca-certificates
+
 WORKDIR /app
 
-# Copy the Go module files and download dependencies
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy the rest of the application code
 COPY . .
 
-# Build the Go application
-RUN go build -o app .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o app .
 
-# Use a minimal base image to run the application
-FROM alpine:latest
+FROM gcr.io/distroless/static-debian12:nonroot
 
-# Install necessary CA certificates
-RUN apk --no-cache add ca-certificates
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=builder /app/app /app
 
-# Set the working directory inside the container
-WORKDIR /root/
+EXPOSE 8080
 
-# Copy the built Go application from the builder stage
-COPY --from=builder /app/app .
-
-# Command to run the application
-CMD ["./app"]
+ENTRYPOINT ["/app"]
