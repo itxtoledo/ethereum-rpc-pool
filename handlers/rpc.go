@@ -2,11 +2,14 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"ethereum-rpc-pool/middleware"
 	"ethereum-rpc-pool/utils"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -14,49 +17,96 @@ import (
 	"time"
 )
 
-var rpcs []string
+var (
+	rpcs   []string
+	logger *slog.Logger
+)
 
-// SetRPCs initializes the list of RPCs from a comma-separated string.
+var httpClient = &http.Client{
+	Timeout: 10 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 20,
+		IdleConnTimeout:     90 * time.Second,
+		DialContext: (&net.Dialer{
+			Timeout:   5 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+	},
+}
+
+func SetLogger(l *slog.Logger) {
+	logger = l
+}
+
+func Logger() *slog.Logger {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return logger
+}
+
 func SetRPCs(rpcList string) {
-	rpcs = strings.Split(rpcList, ",")
+	parts := strings.Split(rpcList, ",")
+	rpcs = make([]string, 0, len(parts))
+	for _, p := range parts {
+		trimmed := strings.TrimSpace(p)
+		if trimmed != "" {
+			rpcs = append(rpcs, trimmed)
+		}
+	}
+	if len(rpcs) == 0 {
+		Logger().Error("RPC_LIST is empty after trimming")
+		os.Exit(1)
+	}
+	Logger().Info("RPC endpoints configured", "count", len(rpcs))
 	InitializeRPCStatus(rpcs)
 }
 
-// --- Background Fetching ---
-
-// FetchBlockNumber starts a ticker to periodically fetch the latest block number from RPCs.
 func FetchBlockNumber() {
 	interval, err := strconv.Atoi(os.Getenv("BLOCK_NUMBER_FETCH_INTERVAL_SECONDS"))
 	if err != nil {
-		interval = 10 // Default to 10 seconds
+		interval = 10
 	}
 
 	ticker := time.NewTicker(time.Duration(interval) * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
-		go fetchFromAllRPCs()
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					Logger().Error("health check goroutine panicked", "error", r)
+				}
+			}()
+			fetchFromAllRPCs()
+		}()
 	}
 }
 
-// fetchFromAllRPCs iterates through the configured RPCs and fetches data from them.
 func fetchFromAllRPCs() {
 	for _, rpc := range rpcs {
-		go fetchBlockNumberFromRPC(rpc)
+		go func(url string) {
+			defer func() {
+				if r := recover(); r != nil {
+					Logger().Error("fetch goroutine panicked", "rpc", url, "error", r)
+				}
+			}()
+			fetchBlockNumberFromRPC(url)
+		}(rpc)
 	}
 }
 
-// fetchBlockNumberFromRPC fetches the latest block number from a single RPC.
 func fetchBlockNumberFromRPC(rpcURL string) {
 	start := time.Now()
-	requestBody, err := json.Marshal(map[string]interface{}{
+	requestBody, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
 		"method":  "eth_blockNumber",
-		"params":  []interface{}{},
+		"params":  []any{},
 		"id":      1,
 	})
 	if err != nil {
-		log.Printf("Error creating eth_blockNumber request body for %s: %v", rpcURL, err)
+		Logger().Error("failed to marshal eth_blockNumber request", "rpc", rpcURL, "error", err)
 		SetRPCStatus(rpcURL, "", 0, false)
 		return
 	}
@@ -64,14 +114,14 @@ func fetchBlockNumberFromRPC(rpcURL string) {
 	respBody, err := makeRPCRequest(rpcURL, requestBody)
 	responseTime := time.Since(start).Milliseconds()
 	if err != nil {
-		log.Printf("Error fetching eth_blockNumber from %s: %v", rpcURL, err)
+		Logger().Warn("eth_blockNumber fetch failed", "rpc", rpcURL, "error", err)
 		SetRPCStatus(rpcURL, "", responseTime, false)
 		return
 	}
 
-	var jsonResponse map[string]interface{}
+	var jsonResponse map[string]any
 	if err := json.Unmarshal(respBody, &jsonResponse); err != nil {
-		log.Printf("Error unmarshalling eth_blockNumber response from %s: %v", rpcURL, err)
+		Logger().Warn("failed to unmarshal eth_blockNumber response", "rpc", rpcURL, "error", err)
 		SetRPCStatus(rpcURL, "", responseTime, false)
 		return
 	}
@@ -79,10 +129,16 @@ func fetchBlockNumberFromRPC(rpcURL string) {
 	if result, ok := jsonResponse["result"]; ok {
 		if blockNumber, ok := result.(string); ok {
 			SetRPCStatus(rpcURL, blockNumber, responseTime, true)
-			log.Printf("Successfully fetched block number from %s: %s", rpcURL, blockNumber)
-			go fetchBlock(rpcURL, blockNumber) // Fetch the full block as well
+			go func(url, bn string) {
+				defer func() {
+					if r := recover(); r != nil {
+						Logger().Error("block fetch goroutine panicked", "rpc", url, "error", r)
+					}
+				}()
+				fetchBlock(url, bn)
+			}(rpcURL, blockNumber)
 		} else {
-			log.Printf("Invalid block number format from %s", rpcURL)
+			Logger().Warn("invalid block number format", "rpc", rpcURL)
 			SetRPCStatus(rpcURL, "", responseTime, false)
 		}
 	} else {
@@ -90,42 +146,37 @@ func fetchBlockNumberFromRPC(rpcURL string) {
 	}
 }
 
-// fetchBlock fetches a full block by its number from an RPC.
 func fetchBlock(rpcURL, blockNumber string) {
-	requestBody, err := json.Marshal(map[string]interface{}{
+	requestBody, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
 		"method":  "eth_getBlockByNumber",
-		"params":  []interface{}{blockNumber, true},
+		"params":  []any{blockNumber, true},
 		"id":      1,
 	})
 	if err != nil {
-		log.Printf("Error creating eth_getBlockByNumber request body for %s: %v", rpcURL, err)
+		Logger().Error("failed to marshal eth_getBlockByNumber request", "rpc", rpcURL, "error", err)
 		return
 	}
 
 	respBody, err := makeRPCRequest(rpcURL, requestBody)
 	if err != nil {
-		log.Printf("Error fetching block %s from %s: %v", blockNumber, rpcURL, err)
+		Logger().Warn("block fetch failed", "rpc", rpcURL, "block", blockNumber, "error", err)
 		return
 	}
 
-	var jsonResponse map[string]interface{}
+	var jsonResponse map[string]any
 	if err := json.Unmarshal(respBody, &jsonResponse); err != nil {
-		log.Printf("Error unmarshalling block response from %s: %v", rpcURL, err)
+		Logger().Warn("failed to unmarshal block response", "rpc", rpcURL, "error", err)
 		return
 	}
 
 	if result, ok := jsonResponse["result"]; ok {
-		if blockData, ok := result.(map[string]interface{}); ok {
+		if blockData, ok := result.(map[string]any); ok {
 			SetBlockCache(blockData)
-			log.Printf("Successfully fetched block from %s: %s", rpcURL, blockNumber)
 		}
 	}
 }
 
-// --- HTTP Handlers ---
-
-// RPCHandler is the main entry point for all RPC requests.
 func RPCHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		w.WriteHeader(http.StatusOK)
@@ -144,41 +195,53 @@ func RPCHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	var jsonRequest map[string]interface{}
+	var jsonRequest map[string]any
 	if err := json.Unmarshal(reqBody, &jsonRequest); err != nil {
 		SendError(w, -32603, "Invalid JSON request body", nil)
 		return
 	}
 
-	// Check if we can handle this request from cache
-	if method, ok := jsonRequest["method"].(string); ok {
-		switch method {
-		case "eth_blockNumber":
-			if handleBlockNumber(w, jsonRequest) {
-				return
-			}
-		case "eth_getBlockByNumber":
-			if handleGetBlockByNumber(w, jsonRequest) {
-				return
-			}
+	method, _ := jsonRequest["method"].(string)
+
+	switch method {
+	case "eth_blockNumber":
+		if handleBlockNumber(w, jsonRequest) {
+			CacheHitsTotal.WithLabelValues(method).Inc()
+			RequestsTotal.WithLabelValues(method, "cache_hit").Inc()
+			return
 		}
+		CacheMissesTotal.WithLabelValues(method).Inc()
+	case "eth_getBlockByNumber":
+		if handleGetBlockByNumber(w, jsonRequest) {
+			CacheHitsTotal.WithLabelValues(method).Inc()
+			RequestsTotal.WithLabelValues(method, "cache_hit").Inc()
+			return
+		}
+		CacheMissesTotal.WithLabelValues(method).Inc()
+		proxyRequestWithRetry(w, r, reqBody, jsonRequest["id"])
+		return
+	case "eth_chainId":
+		handleMethodCache(w, r, jsonRequest, reqBody, "eth_chainId", 0)
+		return
+	case "net_version":
+		handleMethodCache(w, r, jsonRequest, reqBody, "net_version", 0)
+		return
+	case "eth_gasPrice":
+		handleMethodCache(w, r, jsonRequest, reqBody, "eth_gasPrice", 3*time.Second)
+		return
 	}
 
-	// If not handled by cache, proxy the request
 	targetRPC := utils.GetNextRPC(rpcs)
-	fmt.Printf("Proxying request to RPC: %s\n", targetRPC)
-	proxyRequest(w, targetRPC, reqBody, jsonRequest["id"])
+	Logger().Debug("proxying request", "rpc", targetRPC, "method", method)
+	proxyRequest(w, r, targetRPC, reqBody, jsonRequest["id"])
+	RequestsTotal.WithLabelValues(method, "proxied").Inc()
 }
 
-// StatusHandler provides the health status of the configured RPCs.
 func StatusHandler(w http.ResponseWriter, r *http.Request) {
 	sendJSONResponse(w, GetRPCStatus(), http.StatusOK)
 }
 
-// --- Handler Helpers ---
-
-// handleBlockNumber serves eth_blockNumber requests from the cache if possible.
-func handleBlockNumber(w http.ResponseWriter, jsonRequest map[string]interface{}) bool {
+func handleBlockNumber(w http.ResponseWriter, jsonRequest map[string]any) bool {
 	statuses := GetRPCStatus()
 	var latestBlockNumber string
 
@@ -189,7 +252,7 @@ func handleBlockNumber(w http.ResponseWriter, jsonRequest map[string]interface{}
 	}
 
 	if latestBlockNumber != "" {
-		response := map[string]interface{}{
+		response := map[string]any{
 			"jsonrpc": "2.0",
 			"id":      jsonRequest["id"],
 			"result":  latestBlockNumber,
@@ -200,9 +263,8 @@ func handleBlockNumber(w http.ResponseWriter, jsonRequest map[string]interface{}
 	return false
 }
 
-// handleGetBlockByNumber serves eth_getBlockByNumber requests from the cache if possible.
-func handleGetBlockByNumber(w http.ResponseWriter, jsonRequest map[string]interface{}) bool {
-	params, ok := jsonRequest["params"].([]interface{})
+func handleGetBlockByNumber(w http.ResponseWriter, jsonRequest map[string]any) bool {
+	params, ok := jsonRequest["params"].([]any)
 	if !ok || len(params) == 0 {
 		return false
 	}
@@ -217,13 +279,12 @@ func handleGetBlockByNumber(w http.ResponseWriter, jsonRequest map[string]interf
 		return false
 	}
 
-	// Time-based expiration
 	interval, err := strconv.Atoi(os.Getenv("BLOCK_NUMBER_FETCH_INTERVAL_SECONDS"))
 	if err != nil {
-		interval = 10 // Default to 10 seconds
+		interval = 10
 	}
 	if time.Since(cache.Timestamp) > time.Duration(interval)*time.Second {
-		return false // Cache is stale
+		return false
 	}
 
 	cachedBlockNumber, ok := cache.BlockData["number"].(string)
@@ -240,13 +301,13 @@ func handleGetBlockByNumber(w http.ResponseWriter, jsonRequest map[string]interf
 			}
 		}
 		if latestBlockNumber != cachedBlockNumber {
-			return false // Cached block is not the latest one
+			return false
 		}
 	} else if requestedBlock != cachedBlockNumber {
-		return false // incorrect block in cache
+		return false
 	}
 
-	response := map[string]interface{}{
+	response := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      jsonRequest["id"],
 		"result":  cache.BlockData,
@@ -255,33 +316,111 @@ func handleGetBlockByNumber(w http.ResponseWriter, jsonRequest map[string]interf
 	return true
 }
 
-// proxyRequest forwards the original request to a target RPC.
-func proxyRequest(w http.ResponseWriter, targetRPC string, reqBody []byte, id interface{}) {
-	respBody, err := makeRPCRequest(targetRPC, reqBody)
+func proxyRequest(w http.ResponseWriter, r *http.Request, targetRPC string, reqBody []byte, id any) {
+	start := time.Now()
+	respBody, err := makeRPCRequestContext(r.Context(), targetRPC, reqBody)
+	UpstreamDuration.WithLabelValues(targetRPC).Observe(time.Since(start).Seconds())
+
 	if err != nil {
+		Logger().Warn("upstream request failed",
+			"rpc", targetRPC,
+			"error", err,
+			"request_id", middleware.GetRequestID(r),
+		)
 		SendError(w, -32603, "Error making request to RPC", id)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("X-Powered-By", "https://github.dev/itxtoledo/ethereum-rpc-pool")
-	w.WriteHeader(http.StatusOK)
-	w.Write(respBody)
+	writeJSONResponse(w, http.StatusOK, respBody)
 }
 
-// --- Utility Functions ---
+func handleMethodCache(w http.ResponseWriter, r *http.Request, jsonRequest map[string]any, reqBody []byte, method string, ttl time.Duration) {
+	if cached, ok := GetMethodCache(method); ok {
+		CacheHitsTotal.WithLabelValues(method).Inc()
+		RequestsTotal.WithLabelValues(method, "cache_hit").Inc()
+		writeJSONResponse(w, http.StatusOK, cached)
+		return
+	}
 
-// makeRPCRequest sends a JSON-RPC request to the given URL and returns the response body.
+	CacheMissesTotal.WithLabelValues(method).Inc()
+	targetRPC := utils.GetNextRPC(rpcs)
+	Logger().Debug("proxying method", "rpc", targetRPC, "method", method)
+
+	start := time.Now()
+	respBody, err := makeRPCRequestContext(r.Context(), targetRPC, reqBody)
+	UpstreamDuration.WithLabelValues(targetRPC).Observe(time.Since(start).Seconds())
+
+	if err != nil {
+		Logger().Warn("upstream method request failed", "rpc", targetRPC, "method", method, "error", err)
+		SendError(w, -32603, "Error making request to RPC", jsonRequest["id"])
+		return
+	}
+
+	RequestsTotal.WithLabelValues(method, "proxied").Inc()
+	SetMethodCache(method, respBody, ttl)
+	writeJSONResponse(w, http.StatusOK, respBody)
+}
+
+func proxyRequestWithRetry(w http.ResponseWriter, r *http.Request, reqBody []byte, id any) {
+	maxAttempts := len(rpcs)
+	if maxAttempts > 3 {
+		maxAttempts = 3
+	}
+
+	var lastRespBody []byte
+
+	for i := 0; i < maxAttempts; i++ {
+		targetRPC := utils.GetNextRPC(rpcs)
+		Logger().Debug("retry attempt", "rpc", targetRPC, "attempt", i+1, "max", maxAttempts)
+
+		start := time.Now()
+		respBody, err := makeRPCRequestContext(r.Context(), targetRPC, reqBody)
+		UpstreamDuration.WithLabelValues(targetRPC).Observe(time.Since(start).Seconds())
+
+		if err != nil {
+			Logger().Warn("retry attempt failed", "rpc", targetRPC, "attempt", i+1, "error", err)
+			continue
+		}
+
+		if isNullResult(respBody) {
+			lastRespBody = respBody
+			continue
+		}
+
+		RequestsTotal.WithLabelValues("eth_getBlockByNumber", "proxied").Inc()
+		writeJSONResponse(w, http.StatusOK, respBody)
+		return
+	}
+
+	if lastRespBody != nil {
+		RequestsTotal.WithLabelValues("eth_getBlockByNumber", "proxied").Inc()
+		writeJSONResponse(w, http.StatusOK, lastRespBody)
+		return
+	}
+
+	SendError(w, -32603, "All RPC providers returned errors", id)
+}
+
+func isNullResult(respBody []byte) bool {
+	var resp map[string]any
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return false
+	}
+	return resp["result"] == nil
+}
+
 func makeRPCRequest(rpcURL string, requestBody []byte) ([]byte, error) {
-	proxyReq, err := http.NewRequest("POST", rpcURL, bytes.NewBuffer(requestBody))
+	return makeRPCRequestContext(context.Background(), rpcURL, requestBody)
+}
+
+func makeRPCRequestContext(ctx context.Context, rpcURL string, requestBody []byte) ([]byte, error) {
+	proxyReq, err := http.NewRequestWithContext(ctx, "POST", rpcURL, bytes.NewBuffer(requestBody))
 	if err != nil {
 		return nil, fmt.Errorf("error creating proxy request: %w", err)
 	}
-	proxyReq.Header.Add("Content-Type", "application/json")
+	proxyReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(proxyReq)
+	resp, err := httpClient.Do(proxyReq)
 	if err != nil {
 		return nil, fmt.Errorf("error making request to RPC: %w", err)
 	}
@@ -294,13 +433,20 @@ func makeRPCRequest(rpcURL string, requestBody []byte) ([]byte, error) {
 	return respBody, nil
 }
 
-// sendJSONResponse is a helper to send a JSON response with common headers.
-func sendJSONResponse(w http.ResponseWriter, data interface{}, statusCode int) {
+func sendJSONResponse(w http.ResponseWriter, data any, statusCode int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("X-Powered-By", "https://github.dev/itxtoledo/ethereum-rpc-pool")
 	w.WriteHeader(statusCode)
 	if err := json.NewEncoder(w).Encode(data); err != nil {
-		log.Printf("Error encoding JSON response: %v", err)
+		Logger().Error("failed to encode JSON response", "error", err)
 	}
+}
+
+func writeJSONResponse(w http.ResponseWriter, statusCode int, body []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("X-Powered-By", "https://github.dev/itxtoledo/ethereum-rpc-pool")
+	w.WriteHeader(statusCode)
+	w.Write(body)
 }

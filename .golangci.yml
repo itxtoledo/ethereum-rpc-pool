@@ -1,0 +1,28 @@
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gofmt
+    - goimports
+    - misspell
+    - revive
+
+linters-settings:
+  revive:
+    rules:
+      - name: blank-imports
+      - name: context-as-argument
+      - name: error-strings
+      - name: error-return
+      - name: error-naming
+      - name: exported
+
+issues:
+  exclude-use-default: false
+
+run:
+  timeout: 3m

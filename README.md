@@ -1,143 +1,199 @@
 # Ethereum RPC Pool
 
-This project is a Go-based proxy server designed to distribute Ethereum JSON-RPC requests across multiple RPC endpoints. It acts as a smart load balancer, enhancing reliability and potentially reducing costs by intelligently routing requests.
+Go-based proxy server that distributes Ethereum JSON-RPC requests across multiple upstream endpoints with round-robin load balancing, in-memory response caching, background health monitoring, and Prometheus metrics.
 
-## What it Does
+[![CI](https://github.com/itxtoledo/ethereum-rpc-pool/actions/workflows/ci.yaml/badge.svg)](https://github.com/itxtoledo/ethereum-rpc-pool/actions/workflows/ci.yaml)
 
-The Ethereum RPC Pool serves as a central point for all your Ethereum JSON-RPC requests. Instead of directly connecting to a single RPC provider, you send your requests to this proxy. It then forwards these requests to one of several configured RPC endpoints, distributing the load and providing resilience against single-point failures.
+## Features
 
-Key functionalities include:
+- **Load Balancing** — Round-robin across configured RPC endpoints
+- **Response Caching** — In-memory cache for `eth_blockNumber`, `eth_getBlockByNumber`, `eth_chainId`, `net_version`, `eth_gasPrice`
+- **Health Monitoring** — Background goroutine checks every RPC's block number and response time
+- **Graceful Shutdown** — Handles SIGTERM/SIGINT with draining connections
+- **Prometheus Metrics** — `GET /metrics` exposes request counts, latency histograms, cache hit rates, per-RPC health
+- **Structured Logging** — JSON logs to stderr via `log/slog`
+- **Connection Pooling** — Shared `http.Client` with keep-alive and idle connection reuse (100 max, 20 per host)
+- **Middleware Chain** — Request IDs, access logging, panic recovery, max body size (1MB)
+- **Context Propagation** — Upstream requests respect caller context cancellation
+- **Health & Status Endpoints** — `GET /healthz` for liveness probes, `GET /status` for per-RPC details
+- **RPC List Trimming** — Whitespace around comma-separated URLs is stripped automatically
+- **Retry Logic** — `eth_getBlockByNumber` retries up to 3 providers on null results
+- **Multi-Arch Docker** — Pre-built images for `linux/amd64` and `linux/arm64` on [GHCR](https://github.com/itxtoledo/ethereum-rpc-pool/pkgs/container/ethereum-rpc-pool)
 
--   **Load Balancing:** Distributes incoming JSON-RPC `POST` requests across a list of configured RPC endpoints.
--   **RPC Health Monitoring:** Continuously monitors the health and performance of each configured RPC endpoint by periodically fetching the latest block number and measuring response times.
--   **Intelligent Routing:** Currently uses a **round-robin** algorithm to select the next available RPC. (Future enhancements could include least-latency routing based on collected performance metrics).
--   **Response Caching:** Caches responses for common and frequently requested methods like `eth_blockNumber` and `eth_getBlockByNumber` to reduce redundant calls to upstream RPCs and improve response times.
--   **Error Handling:** Gracefully handles errors from upstream RPCs and returns them in the standard Ethereum RPC error format.
--   **Configurable:** Easily configured via environment variables for RPC endpoints and server port.
--   **Containerized:** Provided with a `Dockerfile` for easy deployment in containerized environments.
+## Quick Start
 
-## How it Works
-
-1.  **Initialization:** Upon startup, the server reads a comma-separated list of RPC URLs from the `RPC_LIST` environment variable. It initializes the status for each RPC, marking them as offline initially.
-2.  **Background Monitoring:** A background goroutine periodically sends `eth_blockNumber` requests to *all* configured RPCs. For each RPC, it records:
-    *   Whether the RPC is `Online` or `Offline`.
-    *   The `ResponseTime` (latency) of the `eth_blockNumber` request.
-    *   The `BlockNumber` returned by the RPC.
-    *   A `Timestamp` of the last successful check.
-    This data is stored in an in-memory cache (`rpcStatusCache`).
-3.  **Request Handling (`RPCHandler`):**
-    *   When a client sends a `POST` request to the proxy, the `RPCHandler` first checks if the request can be served from the internal cache (e.g., `eth_blockNumber` or `eth_getBlockByNumber`).
-    *   If the request is cacheable and the data is fresh, the cached response is returned immediately.
-    *   If not cacheable or cache is stale, the handler selects an RPC endpoint using the **round-robin** algorithm.
-    *   The request is then proxied to the selected upstream RPC.
-    *   The response from the upstream RPC is returned to the client.
-4.  **Status Endpoint (`/status`):** A dedicated `/status` endpoint provides a JSON overview of the health and performance of all configured RPCs, including their online status, last fetched block number, and response time in milliseconds.
-
-## Getting Started
-
-### Prerequisites
-
--   Go 1.19 or later
--   Docker (for containerized deployment)
-
-### Environment Variables
-
--   `RPC_LIST`: A comma-separated list of RPC endpoints (e.g., `http://rpc1.example.com,http://rpc2.example.com`). **Required.**
--   `PORT`: The port on which the server will listen (default is `8080`).
--   `BLOCK_NUMBER_FETCH_INTERVAL_SECONDS`: Interval in seconds for background RPC health checks (default is `10`).
-
-### Installation
-
-1.  Clone the repository:
-
-    ```sh
-    git clone https://github.com/itxtoledo/ethereum-rpc-pool.git
-    cd ethereum-rpc-pool
-    ```
-
-2.  Set the environment variables (you can use a `.env` file or export them directly):
-
-    ```sh
-    export RPC_LIST="https://mainnet.infura.io/v3/YOUR_INFURA_PROJECT_ID,https://eth-mainnet.alchemyapi.io/v2/YOUR_ALCHEMY_API_KEY"
-    export PORT=8080
-    export BLOCK_NUMBER_FETCH_INTERVAL_SECONDS=5
-    ```
-
-3.  Run the application:
-
-    ```sh
-    go run .
-    ```
-
-### Building and Running with Docker
-
-1.  Build the Docker image:
-
-    ```sh
-    docker build -t ethereum-rpc-pool .
-    ```
-
-2.  Run the Docker container:
-
-    ```sh
-    docker run -d -p 8080:8080 -e RPC_LIST="https://mainnet.infura.io/v3/YOUR_INFURA_PROJECT_ID,https://eth-mainnet.alchemyapi.io/v2/YOUR_ALCHEMY_API_KEY" -e PORT=8080 ethereum-rpc-pool
-    ```
-
-## One-Click Deployment
-
-### Railway
-
-1.  Click the "Deploy on Railway" button above
-2.  Set the required environment variable `RPC_LIST` with your comma-separated RPC endpoints
-3.  Deploy and your Ethereum RPC Pool will be live
-
-## Usage
-
-Once the server is running, you can send standard Ethereum JSON-RPC `POST` requests to its address.
-
-Example POST request (fetching the latest block number):
+### Run locally
 
 ```sh
-curl -X POST http://localhost:8080/ -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
+git clone https://github.com/itxtoledo/ethereum-rpc-pool.git
+cd ethereum-rpc-pool
+
+cp .env.example .env
+# Edit .env with your RPC_LIST
+
+make dev
 ```
 
-### Status Endpoint
-
-You can check the real-time status and performance metrics of each configured RPC by sending a `GET` request to the `/status` endpoint.
+### Run with Docker
 
 ```sh
+docker run -d -p 8080:8080 \
+  -e RPC_LIST="https://mainnet.infura.io/v3/YOUR_KEY,https://eth-mainnet.alchemyapi.io/v2/YOUR_KEY" \
+  ghcr.io/itxtoledo/ethereum-rpc-pool:latest
+```
+
+### Docker Compose (with local Anvil)
+
+```sh
+docker compose up
+```
+
+This starts the proxy + a local Anvil Ethereum node for development. Send requests to `http://localhost:8080/`.
+
+## Usage Examples
+
+```sh
+# Latest block number
+curl -X POST http://localhost:8080/ \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
+
+# Chain ID (cached)
+curl -X POST http://localhost:8080/ \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}'
+
+# Block by number
+curl -X POST http://localhost:8080/ \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x1000",true],"id":1}'
+
+# RPC health status
 curl http://localhost:8080/status
+
+# Kubernetes liveness probe
+curl http://localhost:8080/healthz
+
+# Prometheus metrics
+curl http://localhost:8080/metrics
 ```
 
-This will return a JSON object with the status of each RPC, including its online status, the latest block number it reported, and its response time in milliseconds.
+### Status Response
+
+```json
+{
+  "https://mainnet.infura.io/v3/...": {
+    "blockNumber": "0x1234567",
+    "responseTime": 156,
+    "timestamp": "2024-06-28T12:00:00Z",
+    "online": true
+  }
+}
+```
+
+### Health Check Response
+
+```json
+{"status":"ok","healthy":true}
+```
+
+Returns `503` with `"status":"degraded"` when all RPCs are offline.
+
+## Environment Variables
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `RPC_LIST` | **Yes** | — | Comma-separated RPC URLs (whitespace is trimmed) |
+| `PORT` | No | `8080` | HTTP listen port |
+| `BLOCK_NUMBER_FETCH_INTERVAL_SECONDS` | No | `10` | Health check interval |
+
+Copy `.env.example` to `.env` and fill in your values.
+
+## Development
+
+**Requirements:** Go 1.23+, [Foundry](https://book.getfoundry.sh/) (for integration tests), [golangci-lint](https://golangci-lint.run/) (for linting)
+
+```sh
+# Build
+make build
+
+# Run all tests
+make test
+
+# Unit tests only
+make test-unit
+
+# Integration tests (starts Anvil automatically)
+make test-integration
+
+# Lint
+make lint
+
+# Docker build
+make docker-build
+```
+
+## Endpoints
+
+| Path | Method | Description |
+|---|---|---|
+| `/` | POST | JSON-RPC proxy |
+| `/` | GET | Health check (simple text) |
+| `/status` | GET | Per-RPC health metrics JSON |
+| `/healthz` | GET | Liveness probe (200/503) |
+| `/metrics` | GET | Prometheus metrics |
+
+## Prometheus Metrics
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `rpc_pool_requests_total` | Counter | method, status | Total RPC requests |
+| `rpc_pool_request_duration_seconds` | Histogram | method | Request duration |
+| `rpc_pool_upstream_duration_seconds` | Histogram | rpc_url | Upstream RPC latency |
+| `rpc_pool_cache_hits_total` | Counter | method | Cache hits |
+| `rpc_pool_cache_misses_total` | Counter | method | Cache misses |
+| `rpc_pool_upstream_online` | Gauge | rpc_url | 1=online, 0=offline |
+| `rpc_pool_upstream_block_number` | Gauge | rpc_url | Latest block number |
+| `rpc_pool_upstream_response_time_ms` | Gauge | rpc_url | Last response time |
+
+## Versioning
+
+[Semantic Versioning](https://semver.org/). See [CHANGELOG.md](CHANGELOG.md) and [releases](https://github.com/itxtoledo/ethereum-rpc-pool/releases).
+
+Docker images are tagged: `v1.0.0`, `1.0`, `1`, `latest`, and commit SHA.
+
+## CI / CD
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| **CI** | PRs and pushes to `main` | Unit tests, integration tests (Anvil), multi-arch Docker build |
+| **Release** | Git tag `v*` | Multi-arch image push to GHCR, GitHub Release |
 
 ## Project Structure
 
-The project is organized into several key directories and files:
-
--   `main.go`: The application's entry point. It handles environment variable loading, initializes RPC status, sets up HTTP routes (`/` for RPC proxying and `/status` for health checks), and starts the HTTP server.
--   `handlers/`: Contains the HTTP handler functions for the RPC proxy and status endpoint.
-    -   `rpc.go`: Implements the core logic for proxying JSON-RPC requests, including cache handling for `eth_blockNumber` and `eth_getBlockByNumber`, and forwarding requests to upstream RPCs.
-    -   `cache.go`: Manages the in-memory cache for RPC status (online/offline, response time, block number) and block data. It provides functions to set and retrieve RPC and block cache information.
-    -   `error.go`: Provides utility functions for sending standardized JSON-RPC error responses.
--   `utils/`: Contains utility functions used across the project.
-    -   `round_robin.go`: Implements the round-robin algorithm for selecting the next RPC endpoint from the configured list.
--   `.github/workflows/on_pr.yaml`: GitHub Actions workflow configuration for Continuous Integration (CI), running tests and linting on Pull Requests.
--   `Dockerfile`: Defines the multi-stage Docker build process for creating a lightweight container image of the application.
--   `.env.example`: An example file demonstrating the required environment variables.
--   `go.mod` & `go.sum`: Go module definition and dependency checksums.
--   `LICENSE`: The project's license (MIT License).
-
-## Contributing
-
-Contributions are welcome! Please feel free to open issues or submit pull requests.
-
-1.  Fork the repository.
-2.  Create a new branch (`git checkout -b feature-branch`).
-3.  Commit your changes (`git commit -am 'Add some feature'`).
-4.  Push to the branch (`git push origin feature-branch`).
-5.  Create a new Pull Request.
+```
+├── main.go                  # Entry point, graceful shutdown, middleware chain
+├── doc.go                   # Package documentation
+├── handlers/
+│   ├── rpc.go               # Core proxy logic, caching, health checks
+│   ├── cache.go             # Thread-safe in-memory caches
+│   ├── error.go             # JSON-RPC error responses
+│   ├── health.go            # /healthz handler
+│   └── metrics.go           # Prometheus metric definitions
+├── middleware/
+│   └── middleware.go         # Recovery, request IDs, access log, max body
+├── utils/
+│   └── round_robin.go       # Atomic round-robin index
+├── Dockerfile               # Multi-stage build, non-root user, HEALTHCHECK
+├── docker-compose.yml       # Dev setup with Anvil
+├── Makefile                 # Build, test, lint targets
+├── .github/workflows/       # CI + Release workflows
+├── .golangci.yml            # Linter configuration
+├── VERSION                  # Current version
+├── CHANGELOG.md             # Release history
+└── .env.example             # Environment variable template
+```
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+MIT — see [LICENSE](LICENSE).
