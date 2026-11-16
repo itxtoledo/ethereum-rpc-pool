@@ -55,10 +55,19 @@ func main() {
 	mux.HandleFunc("/healthz", handlers.HealthHandler)
 	mux.Handle("/metrics", promhttp.Handler())
 
+	allowedOrigins := middleware.ParseAllowedOrigins(os.Getenv("ALLOWED_ORIGINS"))
+	if len(allowedOrigins) == 0 {
+		logger.Info("CORS: allowing all origins")
+	} else {
+		logger.Info("CORS: restricting origins", "allowed_origins", allowedOrigins)
+	}
+
 	chain := middleware.Recovery(logger)(
 		middleware.RequestID(
 			middleware.AccessLog(logger)(
-				middleware.MaxBodySize(1<<20)(mux),
+				middleware.CORS(allowedOrigins)(
+					middleware.MaxBodySize(1 << 20)(mux),
+				),
 			),
 		),
 	)
