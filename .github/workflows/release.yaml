@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - "v*"
+  # Manual re-run for an existing tag: gh workflow run release.yaml --ref vX.Y.Z
+  workflow_dispatch:
 
 permissions:
   contents: write
