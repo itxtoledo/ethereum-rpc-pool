@@ -455,7 +455,6 @@ func makeRPCRequestContext(ctx context.Context, rpcURL string, requestBody []byt
 
 func sendJSONResponse(w http.ResponseWriter, data any, statusCode int) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("X-Powered-By", "https://github.dev/itxtoledo/ethereum-rpc-pool")
 	w.WriteHeader(statusCode)
 	if err := json.NewEncoder(w).Encode(data); err != nil {
@@ -472,7 +471,6 @@ func parseHexBlock(hex string) (int64, error) {
 
 func writeJSONResponse(w http.ResponseWriter, statusCode int, body []byte) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("X-Powered-By", "https://github.dev/itxtoledo/ethereum-rpc-pool")
 	w.WriteHeader(statusCode)
 	w.Write(body)

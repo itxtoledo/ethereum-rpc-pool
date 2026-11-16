@@ -176,6 +176,7 @@ Returns `503` with `"status":"degraded"` when all RPCs are offline.
 | `RPC_LIST` | **Yes** | — | Comma-separated RPC URLs (whitespace is trimmed) |
 | `PORT` | No | `8080` | HTTP listen port |
 | `BLOCK_NUMBER_FETCH_INTERVAL_SECONDS` | No | `10` | Health check interval |
+| `ALLOWED_ORIGINS` | No | `*` | CORS origins allowed to call the pool. `*` (or unset) allows every origin; otherwise a comma-separated list such as `https://app.example.com,https://admin.example.com`. Browser requests from any other origin get `403`. Requests without an `Origin` header (curl, backends, probes) are not affected. |
 
 Copy `.env.example` to `.env` and fill in your values.
 

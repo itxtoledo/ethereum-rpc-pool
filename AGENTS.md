@@ -67,7 +67,7 @@ GET /status  ──►  handlers.StatusHandler → GetRPCStatus()
 ## Code Patterns & Conventions
 
 - **No external router/mux** — uses `http.HandleFunc` with `nil` mux
-- **CORS**: All responses set `Access-Control-Allow-Origin: *`
+- **CORS**: `middleware.CORS` driven by `ALLOWED_ORIGINS` (default `*`; comma-separated list restricts origins, others get 403; no-Origin requests pass)
 - **X-Powered-By header** on every response
 - **Mutex pattern**: `sync.RWMutex` for status/block caches; `sync/atomic.Uint32` for round-robin counter
 - **Error format**: Follows JSON-RPC 2.0 error spec (`{"jsonrpc":"2.0","error":{"code":...,"message":...},"id":...}`)
