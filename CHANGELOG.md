@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Retry on every method: an upstream that times out, drops the connection, answers a non-2xx status, returns invalid JSON or a rate-limit/internal JSON-RPC error is retried on another upstream. Tunable with `RPC_MAX_ATTEMPTS` (default 3), `RPC_RETRY_BACKOFF_MS`, `UPSTREAM_TIMEOUT_SECONDS` and `REQUEST_TIMEOUT_SECONDS`.
+- `LOG_LEVEL` (`debug`, `info`, `warn`, `error`) and `LOG_BODIES` / `LOG_BODY_MAX_BYTES` for detailed debug logs: upstream order, every attempt with status, duration, size, outcome and reason, and optionally the full request and response bodies. All log lines of a request share its `request_id`.
+- The access log now includes `origin`, `user_agent` and `content_length`.
+
+### Changed
+- When every attempt fails the pool answers `502` (`504` when the request budget ran out) instead of `400`, with the `request_id` and attempt count in the JSON-RPC error `data`.
+- Upstream URLs are logged redacted (`https://host/…#fingerprint`) because they often embed API keys.
+- Offline upstreams (per the health check) are tried last.
+- Failed or invalid upstream answers are no longer cached for `eth_chainId`, `net_version` and `eth_gasPrice`.
+- Health checks treat a non-2xx upstream status as offline.
+
 ## [1.0.1] - 2026-11-16
 
 ### Added
