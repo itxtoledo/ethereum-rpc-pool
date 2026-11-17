@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.2] - 2026-11-17
 
 ### Added
 - Retry on every method: an upstream that times out, drops the connection, answers a non-2xx status, returns invalid JSON or a rate-limit/internal JSON-RPC error is retried on another upstream. Tunable with `RPC_MAX_ATTEMPTS` (default 3), `RPC_RETRY_BACKOFF_MS`, `UPSTREAM_TIMEOUT_SECONDS` and `REQUEST_TIMEOUT_SECONDS`.
@@ -41,5 +41,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `.env` file support via godotenv
 - CORS headers on all responses
 
+[1.0.2]: https://github.com/itxtoledo/ethereum-rpc-pool/releases/tag/v1.0.2
 [1.0.1]: https://github.com/itxtoledo/ethereum-rpc-pool/releases/tag/v1.0.1
 [1.0.0]: https://github.com/itxtoledo/ethereum-rpc-pool/releases/tag/v1.0.0
