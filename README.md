@@ -17,7 +17,8 @@ Go-based proxy server that distributes Ethereum JSON-RPC requests across multipl
 - **Context Propagation** — Upstream requests respect caller context cancellation
 - **Health & Status Endpoints** — `GET /healthz` for liveness probes, `GET /status` for per-RPC details
 - **RPC List Trimming** — Whitespace around comma-separated URLs is stripped automatically
-- **Retry Logic** — `eth_getBlockByNumber` retries up to 3 providers on null results
+- **Retry Logic** — every method is retried on another provider when an upstream times out, drops the connection, answers a non-2xx status, returns invalid JSON or a rate-limit error (`RPC_MAX_ATTEMPTS`, default 3); `eth_getBlockByNumber` also retries null results
+- **Debug Logging** — `LOG_LEVEL=debug` logs every upstream attempt; `LOG_BODIES=true` adds the full request and response bodies
 - **Multi-Arch Docker** — Pre-built images for `linux/amd64` and `linux/arm64` on [GHCR](https://github.com/itxtoledo/ethereum-rpc-pool/pkgs/container/ethereum-rpc-pool)
 - **Minimal Image** — ~10MB distroless base, no shell, non-root user
 
@@ -177,8 +178,23 @@ Returns `503` with `"status":"degraded"` when all RPCs are offline.
 | `PORT` | No | `8080` | HTTP listen port |
 | `BLOCK_NUMBER_FETCH_INTERVAL_SECONDS` | No | `10` | Health check interval |
 | `ALLOWED_ORIGINS` | No | `*` | CORS origins allowed to call the pool. `*` (or unset) allows every origin; otherwise a comma-separated list such as `https://app.example.com,https://admin.example.com`. Browser requests from any other origin get `403`. Requests without an `Origin` header (curl, backends, probes) are not affected. |
+| `RPC_MAX_ATTEMPTS` | No | `3` | Upstream tries per request before failing. Attempts go to different upstreams first (ones the health check marked offline go last), then cycle back with a backoff. |
+| `RPC_RETRY_BACKOFF_MS` | No | `100` | Base delay before retrying an upstream already tried for the same request. |
+| `UPSTREAM_TIMEOUT_SECONDS` | No | `10` | Timeout of one upstream call. |
+| `REQUEST_TIMEOUT_SECONDS` | No | `25` | Total budget of one client request, retries included. Keep it below 30 (the server write timeout). |
+| `LOG_LEVEL` | No | `info` | `debug`, `info`, `warn` or `error`. `debug` logs the upstream order, every attempt (status, duration, size, outcome, reason) and the response sent to the client. |
+| `LOG_BODIES` | No | `false` | With `LOG_LEVEL=debug`, also logs the JSON-RPC request and response bodies. Bodies can contain wallet addresses and signed transactions; turn it off after debugging. |
+| `LOG_BODY_MAX_BYTES` | No | `65536` | Truncates logged bodies; `0` means no limit. |
 
 Copy `.env.example` to `.env` and fill in your values.
+
+### Failures and retries
+
+A request is retried on another upstream when the upstream fails (timeout, connection error, non-2xx status, invalid JSON, or a JSON-RPC rate-limit/internal error). A JSON-RPC error that answers the request itself (`execution reverted`, `nonce too low`...) is returned as is, without retry. When every attempt fails the pool answers **`502`** (**`504`** if the request budget ran out) with a JSON-RPC error `-32603` whose `data` holds the `request_id` and the attempt count. The same `request_id` is in the `X-Request-ID` header and in every log line of that request.
+
+Logs never print upstream URLs (they often carry API keys): each upstream appears as `https://host/…#abc123`, a host plus a short fingerprint.
+
+Note: `eth_sendRawTransaction` is retried like any other method. If the first attempt reached the node but its answer was lost, the retry can come back as `already known` or `nonce too low` even though the transaction was accepted.
 
 ## Development
 

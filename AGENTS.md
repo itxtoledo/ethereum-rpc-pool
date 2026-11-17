@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Go-based proxy server that load-balances Ethereum JSON-RPC requests across multiple upstream endpoints. Implements round-robin routing, in-memory response caching for `eth_blockNumber` and `eth_getBlockByNumber`, and background health monitoring of all configured RPCs.
+Go-based proxy server that load-balances Ethereum JSON-RPC requests across multiple upstream endpoints. Implements round-robin routing with retry on upstream failures (`handlers/forward.go`), in-memory response caching for `eth_blockNumber` and `eth_getBlockByNumber`, and background health monitoring of all configured RPCs.
 
 Go 1.19, single external dependency (`godotenv`). No framework — raw `net/http`.
 
@@ -51,6 +51,8 @@ GET /status  ──►  handlers.StatusHandler → GetRPCStatus()
 | `RPC_LIST` | **Yes** | — | Comma-separated RPC URLs |
 | `PORT` | No | `8080` | HTTP listen port |
 | `BLOCK_NUMBER_FETCH_INTERVAL_SECONDS` | No | `10` | Health check interval |
+| `RPC_MAX_ATTEMPTS`, `RPC_RETRY_BACKOFF_MS`, `UPSTREAM_TIMEOUT_SECONDS`, `REQUEST_TIMEOUT_SECONDS` | No | `3`, `100`, `10`, `25` | Retry and timeout tuning |
+| `LOG_LEVEL`, `LOG_BODIES`, `LOG_BODY_MAX_BYTES` | No | `info`, `false`, `65536` | Debug logging; bodies only logged at `debug` |
 
 **Critical**: `RPC_LIST` values are split by comma with **no whitespace trimming**. If a value has leading/trailing spaces, those become part of the URL and will cause connection failures.
 
@@ -61,7 +63,9 @@ GET /status  ──►  handlers.StatusHandler → GetRPCStatus()
 | `main.go` | Entry point: env loading, route setup, starts background fetcher |
 | `handlers/rpc.go` | Core handler logic, caching decisions, proxying |
 | `handlers/cache.go` | Thread-safe in-memory caches (`RPCStatus`, `BlockCache`) |
-| `handlers/error.go` | JSON-RPC error response helper |
+| `handlers/error.go` | JSON-RPC error response helpers (`SendError` = 400, `SendErrorWithData` = explicit status) |
+| `handlers/forward.go` | Retry engine: upstream ordering, failure classification, debug logging, URL redaction |
+| `handlers/config.go` | Env-driven tuning (`RPC_MAX_ATTEMPTS`, `LOG_BODIES`, ...) and `LOG_LEVEL` parsing |
 | `utils/round_robin.go` | Atomic round-robin index selection |
 
 ## Code Patterns & Conventions
@@ -71,7 +75,8 @@ GET /status  ──►  handlers.StatusHandler → GetRPCStatus()
 - **X-Powered-By header** on every response
 - **Mutex pattern**: `sync.RWMutex` for status/block caches; `sync/atomic.Uint32` for round-robin counter
 - **Error format**: Follows JSON-RPC 2.0 error spec (`{"jsonrpc":"2.0","error":{"code":...,"message":...},"id":...}`)
-- **HTTP client**: Inline `&http.Client{Timeout: 10 * time.Second}` per request (not pooled)
+- **HTTP client**: one shared pooled `httpClient`; its timeout comes from `UPSTREAM_TIMEOUT_SECONDS`
+- **Upstream failures**: return 502/504 (never 400) and never log raw upstream URLs, use `redactURL`
 
 ## Gotchas
 
@@ -85,7 +90,7 @@ GET /status  ──►  handlers.StatusHandler → GetRPCStatus()
 
 ## Testing
 
-No test files exist. Standard Go test conventions apply if adding tests: `go test ./...`, test files alongside source in `handlers/` and `utils/`.
+`go test ./...` (unit tests use `httptest` upstreams; see `handlers/forward_test.go`). Integration tests need Anvil and `-tags=integration`.
 
 ## Docker
 

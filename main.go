@@ -17,10 +17,14 @@ import (
 )
 
 func main() {
+	level, levelOK := handlers.ParseLogLevel(os.Getenv("LOG_LEVEL"))
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level: level,
 	}))
 	handlers.SetLogger(logger)
+	if !levelOK {
+		logger.Warn("invalid LOG_LEVEL, using info", "value", os.Getenv("LOG_LEVEL"))
+	}
 
 	envFile := filepath.Join(".", ".env")
 	if _, err := os.Stat(envFile); err == nil {
@@ -32,6 +36,24 @@ func main() {
 		logger.Info("no .env file found, using system environment variables")
 	} else {
 		logger.Warn("could not check .env file existence", "error", err)
+	}
+
+	config, warnings := handlers.LoadConfigFromEnv()
+	for _, w := range warnings {
+		logger.Warn("invalid configuration", "detail", w)
+	}
+	handlers.SetConfig(config)
+	logger.Info("configuration loaded",
+		"log_level", level.String(),
+		"log_bodies", config.LogBodies && level <= slog.LevelDebug,
+		"log_body_max_bytes", config.LogBodyMaxBytes,
+		"rpc_max_attempts", config.MaxAttempts,
+		"rpc_retry_backoff_ms", config.RetryBackoff.Milliseconds(),
+		"upstream_timeout_s", config.UpstreamTimeout.Seconds(),
+		"request_timeout_s", config.TotalTimeout.Seconds(),
+	)
+	if config.LogBodies && level > slog.LevelDebug {
+		logger.Warn("LOG_BODIES has no effect unless LOG_LEVEL=debug")
 	}
 
 	rpcList := os.Getenv("RPC_LIST")

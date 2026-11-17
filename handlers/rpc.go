@@ -1,11 +1,9 @@
 package handlers
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"ethereum-rpc-pool/middleware"
-	"ethereum-rpc-pool/utils"
 	"fmt"
 	"io"
 	"log/slog"
@@ -58,7 +56,7 @@ func SetRPCs(rpcList string) error {
 	if len(rpcs) == 0 {
 		return fmt.Errorf("RPC_LIST is empty after trimming")
 	}
-	Logger().Info("RPC endpoints configured", "count", len(rpcs))
+	Logger().Info("RPC endpoints configured", "count", len(rpcs), "upstreams", redactedList(rpcs))
 	InitializeRPCStatus(rpcs)
 	return nil
 }
@@ -89,7 +87,7 @@ func fetchFromAllRPCs() {
 		go func(url string) {
 			defer func() {
 				if r := recover(); r != nil {
-					Logger().Error("fetch goroutine panicked", "rpc", url, "error", r)
+					Logger().Error("fetch goroutine panicked", "rpc", redactURL(url), "error", r)
 				}
 			}()
 			fetchBlockNumberFromRPC(url)
@@ -106,7 +104,7 @@ func fetchBlockNumberFromRPC(rpcURL string) {
 		"id":      1,
 	})
 	if err != nil {
-		Logger().Error("failed to marshal eth_blockNumber request", "rpc", rpcURL, "error", err)
+		Logger().Error("failed to marshal eth_blockNumber request", "rpc", redactURL(rpcURL), "error", err)
 		SetRPCStatus(rpcURL, "", 0, false)
 		return
 	}
@@ -114,14 +112,14 @@ func fetchBlockNumberFromRPC(rpcURL string) {
 	respBody, err := makeRPCRequest(rpcURL, requestBody)
 	responseTime := time.Since(start).Milliseconds()
 	if err != nil {
-		Logger().Warn("eth_blockNumber fetch failed", "rpc", rpcURL, "error", err)
+		Logger().Warn("eth_blockNumber fetch failed", "rpc", redactURL(rpcURL), "error", err)
 		SetRPCStatus(rpcURL, "", responseTime, false)
 		return
 	}
 
 	var jsonResponse map[string]any
 	if err := json.Unmarshal(respBody, &jsonResponse); err != nil {
-		Logger().Warn("failed to unmarshal eth_blockNumber response", "rpc", rpcURL, "error", err)
+		Logger().Warn("failed to unmarshal eth_blockNumber response", "rpc", redactURL(rpcURL), "error", err)
 		SetRPCStatus(rpcURL, "", responseTime, false)
 		return
 	}
@@ -132,13 +130,13 @@ func fetchBlockNumberFromRPC(rpcURL string) {
 			go func(url, bn string) {
 				defer func() {
 					if r := recover(); r != nil {
-						Logger().Error("block fetch goroutine panicked", "rpc", url, "error", r)
+						Logger().Error("block fetch goroutine panicked", "rpc", redactURL(url), "error", r)
 					}
 				}()
 				fetchBlock(url, bn)
 			}(rpcURL, blockNumber)
 		} else {
-			Logger().Warn("invalid block number format", "rpc", rpcURL)
+			Logger().Warn("invalid block number format", "rpc", redactURL(rpcURL))
 			SetRPCStatus(rpcURL, "", responseTime, false)
 		}
 	} else {
@@ -154,19 +152,19 @@ func fetchBlock(rpcURL, blockNumber string) {
 		"id":      1,
 	})
 	if err != nil {
-		Logger().Error("failed to marshal eth_getBlockByNumber request", "rpc", rpcURL, "error", err)
+		Logger().Error("failed to marshal eth_getBlockByNumber request", "rpc", redactURL(rpcURL), "error", err)
 		return
 	}
 
 	respBody, err := makeRPCRequest(rpcURL, requestBody)
 	if err != nil {
-		Logger().Warn("block fetch failed", "rpc", rpcURL, "block", blockNumber, "error", err)
+		Logger().Warn("block fetch failed", "rpc", redactURL(rpcURL), "block", blockNumber, "error", err)
 		return
 	}
 
 	var jsonResponse map[string]any
 	if err := json.Unmarshal(respBody, &jsonResponse); err != nil {
-		Logger().Warn("failed to unmarshal block response", "rpc", rpcURL, "error", err)
+		Logger().Warn("failed to unmarshal block response", "rpc", redactURL(rpcURL), "error", err)
 		return
 	}
 
@@ -209,6 +207,8 @@ func RPCHandler(w http.ResponseWriter, r *http.Request) {
 		RequestDuration.WithLabelValues(method).Observe(time.Since(start).Seconds())
 	}()
 
+	reqID := middleware.GetRequestID(r)
+
 	switch method {
 	case "eth_blockNumber":
 		if handleBlockNumber(w, jsonRequest) {
@@ -224,7 +224,7 @@ func RPCHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		CacheMissesTotal.WithLabelValues(method).Inc()
-		proxyRequestWithRetry(w, r, reqBody, jsonRequest["id"])
+		proxy(w, r, reqID, method, reqBody, jsonRequest["id"], true)
 		return
 	case "eth_chainId":
 		handleMethodCache(w, r, jsonRequest, reqBody, "eth_chainId", 0)
@@ -237,10 +237,7 @@ func RPCHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	targetRPC := utils.GetNextRPC(rpcs)
-	Logger().Debug("proxying request", "rpc", targetRPC, "method", method)
-	proxyRequest(w, r, targetRPC, reqBody, jsonRequest["id"])
-	RequestsTotal.WithLabelValues(method, "proxied").Inc()
+	proxy(w, r, reqID, method, reqBody, jsonRequest["id"], false)
 }
 
 func StatusHandler(w http.ResponseWriter, r *http.Request) {
@@ -336,22 +333,14 @@ func handleGetBlockByNumber(w http.ResponseWriter, jsonRequest map[string]any) b
 	return true
 }
 
-func proxyRequest(w http.ResponseWriter, r *http.Request, targetRPC string, reqBody []byte, id any) {
-	start := time.Now()
-	respBody, err := makeRPCRequestContext(r.Context(), targetRPC, reqBody)
-	UpstreamDuration.WithLabelValues(targetRPC).Observe(time.Since(start).Seconds())
-
-	if err != nil {
-		Logger().Warn("upstream request failed",
-			"rpc", targetRPC,
-			"error", err,
-			"request_id", middleware.GetRequestID(r),
-		)
-		SendError(w, -32603, "Error making request to RPC", id)
-		return
+// proxy forwards the request with retries and writes the answer.
+func proxy(w http.ResponseWriter, r *http.Request, reqID, method string, reqBody []byte, id any, retryNull bool) {
+	res := forward(r.Context(), reqID, method, reqBody, retryNull)
+	status := "proxied"
+	if !respond(w, reqID, id, res) {
+		status = "failed"
 	}
-
-	writeJSONResponse(w, http.StatusOK, respBody)
+	RequestsTotal.WithLabelValues(method, status).Inc()
 }
 
 func handleMethodCache(w http.ResponseWriter, r *http.Request, jsonRequest map[string]any, reqBody []byte, method string, ttl time.Duration) {
@@ -363,62 +352,15 @@ func handleMethodCache(w http.ResponseWriter, r *http.Request, jsonRequest map[s
 	}
 
 	CacheMissesTotal.WithLabelValues(method).Inc()
-	targetRPC := utils.GetNextRPC(rpcs)
-	Logger().Debug("proxying method", "rpc", targetRPC, "method", method)
-
-	start := time.Now()
-	respBody, err := makeRPCRequestContext(r.Context(), targetRPC, reqBody)
-	UpstreamDuration.WithLabelValues(targetRPC).Observe(time.Since(start).Seconds())
-
-	if err != nil {
-		Logger().Warn("upstream method request failed", "rpc", targetRPC, "method", method, "error", err)
-		SendError(w, -32603, "Error making request to RPC", jsonRequest["id"])
+	reqID := middleware.GetRequestID(r)
+	res := forward(r.Context(), reqID, method, reqBody, false)
+	if !respond(w, reqID, jsonRequest["id"], res) {
+		RequestsTotal.WithLabelValues(method, "failed").Inc()
 		return
 	}
 
 	RequestsTotal.WithLabelValues(method, "proxied").Inc()
-	SetMethodCache(method, respBody, ttl)
-	writeJSONResponse(w, http.StatusOK, respBody)
-}
-
-func proxyRequestWithRetry(w http.ResponseWriter, r *http.Request, reqBody []byte, id any) {
-	maxAttempts := len(rpcs)
-	if maxAttempts > 3 {
-		maxAttempts = 3
-	}
-
-	var lastRespBody []byte
-
-	for i := 0; i < maxAttempts; i++ {
-		targetRPC := utils.GetNextRPC(rpcs)
-		Logger().Debug("retry attempt", "rpc", targetRPC, "attempt", i+1, "max", maxAttempts)
-
-		start := time.Now()
-		respBody, err := makeRPCRequestContext(r.Context(), targetRPC, reqBody)
-		UpstreamDuration.WithLabelValues(targetRPC).Observe(time.Since(start).Seconds())
-
-		if err != nil {
-			Logger().Warn("retry attempt failed", "rpc", targetRPC, "attempt", i+1, "error", err)
-			continue
-		}
-
-		if isNullResult(respBody) {
-			lastRespBody = respBody
-			continue
-		}
-
-		RequestsTotal.WithLabelValues("eth_getBlockByNumber", "proxied").Inc()
-		writeJSONResponse(w, http.StatusOK, respBody)
-		return
-	}
-
-	if lastRespBody != nil {
-		RequestsTotal.WithLabelValues("eth_getBlockByNumber", "proxied").Inc()
-		writeJSONResponse(w, http.StatusOK, lastRespBody)
-		return
-	}
-
-	SendError(w, -32603, "All RPC providers returned errors", id)
+	SetMethodCache(method, res.Body, ttl)
 }
 
 func isNullResult(respBody []byte) bool {
@@ -434,23 +376,14 @@ func makeRPCRequest(rpcURL string, requestBody []byte) ([]byte, error) {
 }
 
 func makeRPCRequestContext(ctx context.Context, rpcURL string, requestBody []byte) ([]byte, error) {
-	proxyReq, err := http.NewRequestWithContext(ctx, "POST", rpcURL, bytes.NewBuffer(requestBody))
-	if err != nil {
-		return nil, fmt.Errorf("error creating proxy request: %w", err)
-	}
-	proxyReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := httpClient.Do(proxyReq)
+	status, body, err := doUpstream(ctx, rpcURL, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("error making request to RPC: %w", err)
 	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("error reading RPC response: %w", err)
+	if status < 200 || status > 299 {
+		return nil, fmt.Errorf("upstream http status %d", status)
 	}
-	return respBody, nil
+	return body, nil
 }
 
 func sendJSONResponse(w http.ResponseWriter, data any, statusCode int) {

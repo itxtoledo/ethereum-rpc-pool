@@ -61,6 +61,9 @@ func AccessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 				"status", ww.statusCode,
 				"duration_ms", time.Since(start).Milliseconds(),
 				"remote_addr", r.RemoteAddr,
+				"origin", r.Header.Get("Origin"),
+				"user_agent", r.UserAgent(),
+				"content_length", r.ContentLength,
 			)
 		})
 	}
